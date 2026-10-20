@@ -156,6 +156,90 @@ class TestStrandsDecider2B(unittest.TestCase):
         self.assertTrue(outcome.human_review_required, "Low confidence must flag human review.")
 
     @patch.object(StrandsDeciderClient, "ask")
+    def test_real_model_exact_confidence_threshold_allows_automated_action(self, mock_ask):
+        """When action confidence is exactly 0.70 and human_review is low (0.10), automated action is allowed."""
+        mock_ask.return_value = {
+            "action": {
+                "type": "choice",
+                "choice": "dispatch_replacement",
+                "confidence": 0.70,
+                "probabilities": {
+                    "dispatch_replacement": 0.70,
+                    "crossdock": 0.15,
+                    "reroute_shipment": 0.10,
+                    "escalate_to_human": 0.04,
+                    "continue_monitoring": 0.01,
+                },
+            },
+            "is_urgent": {"type": "noul", "noul": 0.60},
+            "human_review": {"type": "noul", "noul": 0.10},
+            "urgency_tier": {"type": "choice", "choice": "HIGH"},
+        }
+
+        incident = IncidentContext(
+            shipment_id="SHP-THRESHOLD-EXACT",
+            delivery_deadline="2026-10-20T15:00:00Z",
+            truck_breakdown=True,
+            breakdown_severity="CRITICAL",
+            replacement_vehicle_available=True,
+            customer_notified=False,
+            cargo_type="Cold-Chain Dairy",
+        )
+
+        outcome = self.decider.evaluate(incident)
+
+        self.assertEqual(outcome.engine, "STRANDS_DECIDER_2B_REAL")
+        self.assertTrue(outcome.is_real_model)
+        self.assertEqual(outcome.selected_action, "dispatch_replacement")
+        self.assertAlmostEqual(outcome.model_confidence, 0.70)
+        self.assertFalse(
+            outcome.human_review_required,
+            "Exact confidence threshold of 0.70 with human_review score < 0.5 must not require human review.",
+        )
+
+    @patch.object(StrandsDeciderClient, "ask")
+    def test_real_model_human_review_signal_independently_triggers_review(self, mock_ask):
+        """Human-review signal (noul >= 0.5) must independently trigger human review even with high confidence."""
+        mock_ask.return_value = {
+            "action": {
+                "type": "choice",
+                "choice": "dispatch_replacement",
+                "confidence": 0.90,
+                "probabilities": {
+                    "dispatch_replacement": 0.90,
+                    "crossdock": 0.05,
+                    "reroute_shipment": 0.03,
+                    "escalate_to_human": 0.01,
+                    "continue_monitoring": 0.01,
+                },
+            },
+            "is_urgent": {"type": "noul", "noul": 0.85},
+            "human_review": {"type": "noul", "noul": 0.80},
+            "urgency_tier": {"type": "choice", "choice": "HIGH"},
+        }
+
+        incident = IncidentContext(
+            shipment_id="SHP-HIGH-CONF-REVIEW",
+            delivery_deadline="2026-10-20T14:00:00Z",
+            truck_breakdown=True,
+            breakdown_severity="CRITICAL",
+            replacement_vehicle_available=True,
+            customer_notified=False,
+            cargo_type="Pharmaceuticals",
+        )
+
+        outcome = self.decider.evaluate(incident)
+
+        self.assertEqual(outcome.engine, "STRANDS_DECIDER_2B_REAL")
+        self.assertTrue(outcome.is_real_model)
+        self.assertEqual(outcome.selected_action, "dispatch_replacement")
+        self.assertAlmostEqual(outcome.model_confidence, 0.90)
+        self.assertTrue(
+            outcome.human_review_required,
+            "High human_review noul (0.80 >= 0.5) must independently trigger review even when confidence is 0.90.",
+        )
+
+    @patch.object(StrandsDeciderClient, "ask")
     def test_safe_fallback_when_inference_server_unreachable(self, mock_ask):
         """When server is offline, safe fallback must engage, clearly labeled as SAFE_FALLBACK."""
         mock_ask.side_effect = ServerUnavailableError("Connection refused on port 8099")

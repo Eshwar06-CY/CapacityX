@@ -1,130 +1,92 @@
-# Strands Decider 2B — Typed Logistics Decision Pattern
+# CAPACITYX Agent Decision & Orchestration Patterns
 
-This module implements the **Strands Decider 2B** decision pattern for **CAPACITYX**, adhering to the official upstream specification from [Strands Labs (AWS)](https://github.com/strands-labs/strands-decider).
-
----
-
-## 1. What is Strands Decider 2B?
-
-Strands Decider is an open-source **"System 1" decision model** designed specifically for agentic AI workflows. Unlike conventional generative LLMs that produce free-form text, Strands Decider:
-- Evaluates a contextual **state** against **typed questions** (`choice`, `noul`, `score`).
-- Selects among bounded options in milliseconds.
-- Outputs **calibrated confidence probabilities** (allowing automated actions when confidence is high, and triggering human review when confidence is low).
-- Requires no prompt engineering for schema compliance; decision boundaries are learned and deterministic.
+This directory contains the core decision and reasoning components for **CAPACITYX**:
+1. **Strands Decider 2B** (`patterns/strands_decider_2b.py`): System 1 fast, typed logistics tool selector with calibrated probabilities.
+2. **Amazon Bedrock Nova Micro** (`patterns/bedrock_nova_micro.py`): Converse API adapter for `amazon.nova-micro-v1:0` in `us-east-1`.
+3. **Agent Orchestrator** (`patterns/orchestrator.py`): Orchestrates Strands tool selection with Bedrock complementary operational reasoning.
+4. **Offline Test Suite** (`patterns/tests/`): 38 deterministic, 100% offline unit tests.
 
 ---
 
-## 2. The 5 Typed Logistics Decision Tools
+## 1. System 1 vs. System 2 Decision Pattern
 
-In CapacityX, the Decider selects from 5 discrete tools:
+| Role | Component | Responsibility | Output Characteristics |
+|---|---|---|---|
+| **System 1 (Primary)** | **Strands Decider 2B** | Evaluates incident state and selects 1 of 5 canonical tools | Calibrated confidence (0.0 to 1.0), probability distribution over all 5 tools |
+| **System 2 (Complementary)** | **Amazon Bedrock Nova Micro** | Operational reasoning & viability analysis | Logistical precautions, warehouse routing notes, risk detection |
+
+### Workflow:
+1. `StrandsDecider2B.evaluate_decision()` receives structured incident telemetry (`IncidentContext`).
+2. If the inference server is online, it evaluates choices and returns the selected action, urgency, confidence score, and alternative tool distribution. If offline, the deterministic safe fallback engages.
+3. The selected action and context are forwarded to `BedrockOperationalReasoner`.
+4. If Bedrock is disabled (default), the Strands decision passes through with `bedrock_validation.status: "disabled"`.
+5. If Bedrock mock mode is enabled for tests, simulated operational precautions are generated with `is_simulated: true`.
+6. If live Bedrock inference is enabled, the Converse API is invoked. If AWS returns an account verification error (`ValidationException: Operation not allowed`), it is trapped safely and recorded as `status: "blocked_unverified"` without disrupting the primary Strands decision.
+
+---
+
+## 2. The 5 Canonical Logistics Decision Tools
+
+All orchestration pathways strictly map to the 5 canonical logistics actions:
 
 | Tool Name | Type | Selection Criteria |
 |---|---|---|
-| `dispatch_replacement` | Action | Primary vehicle is immobilized; backup transport asset is available within range. Dispatches backup unit to rendezvous and cross-dock freight. |
-| `reroute_shipment` | Action | Vehicle is operational; recomputes route coordinates to bypass congestion, road closures, or minor delays. |
+| `dispatch_replacement` | Action | Primary vehicle immobilized; replacement asset available within 45 min. Dispatches backup unit to rendezvous. |
+| `reroute_shipment` | Action | Vehicle operational; recomputes route coordinates to bypass congestion, road closures, or minor delays. |
 | `crossdock` | Action | Vehicle has partial mechanical issue or perishable cargo; diverts to closest warehouse cross-dock bay. |
 | `escalate_to_human` | Escalation | Vehicle disabled with **NO** backup units within range, or severe SLA breach predicted. Mandates human dispatcher intervention. |
 | `continue_monitoring` | Nominal | Telemetry and route are nominal; maintain automated heartbeat monitoring without intervention. |
 
 ---
 
-## 3. Architecture & Fail-Safe Fallback
+## 3. Configuration & Modes
 
-```
-[ Shipment Incident Payload ]
-              │
-              ▼
-    [ IncidentContext.to_state_text() ]
-              │
-              ▼
-   [ StrandsDecider2B.evaluate() ]
-              │
-     Is Decider Server online?
-          /             \
-        YES              NO / Inference Error
-        /                 \
-       ▼                   ▼
-[ StrandsDeciderClient ]  [ _safe_rule_fallback() ]
-POST /v1/systemone        - Deterministic safety policy
-- Action: choice          - Selected action assigned safely
-- Is Urgent: noul         - human_review_required = True
-- Human Review: noul      - confidence = None
-- Urgency Tier: choice    - engine = "SAFE_FALLBACK"
-       │                   - is_real_model = False
-       ▼                   │
-Outcome:                   │
-- engine = REAL_MODEL      │
-- confidence parsed        │
-- alternatives mapped      │
-       \                  /
-        ▼                ▼
-     [ Standard DeciderOutcome ]
-                 │
-                 ▼
-     [ FastAPI Backend /api/decide ]
-```
+| Variable | Values | Description |
+|---|---|---|
+| `STRANDS_DECIDER_URL` | URL string | Strands Decider inference endpoint (e.g. ngrok tunnel or `http://127.0.0.1:8099`) |
+| `STRANDS_DECIDER_USERNAME` | string | Optional HTTP Basic Auth username |
+| `STRANDS_DECIDER_PASSWORD` | string | Optional HTTP Basic Auth password |
+| `CAPACITYX_ENABLE_BEDROCK` | `false` (default) / `true` | Enable or disable Bedrock operational reasoning |
+| `CAPACITYX_BEDROCK_MODE` | `disabled` (default) / `mock` / `live` | Operational mode for the Bedrock component |
+| `BEDROCK_MODEL_ID` | `amazon.nova-micro-v1:0` | Target Amazon Bedrock foundation model |
+| `AWS_REGION` | `us-east-1` | Target AWS region |
 
 ---
 
-## 4. Hardware Requirements & Windows Environment Blocker
+## 4. Amazon Bedrock Free Tier Restriction & Mock Transparency
 
-### The Machine Profile (Inspected)
-- **CPU**: Intel Core Ultra 5 125H
-- **GPU**: Integrated Intel Arc Graphics (No discrete NVIDIA GPU / No CUDA)
-- **Total System RAM**: 16 GB
-- **Currently Available Free RAM**: **~2.3 GB**
-- **OS**: Windows 11 (Python 3.13)
-
-### Exact Local Execution Blockers:
-1. **Memory Exhaustion**: The `StrandsAgents/strands-decider-2B-qwen3.5-v1-2610` model weights require **~4.5 GB to 5 GB** in RAM. Loading these weights locally into Python on this machine with only ~2.3 GB of free physical memory will instantly exhaust RAM and trigger Windows pagefile thrashing or crash with an `OutOfMemoryError`.
-2. **Platform & Accelerator Support**: The official repository (`docs/inference.md`) explicitly specifies:
-   - Linux with NVIDIA CUDA GPU
-   - Windows with WSL2 and NVIDIA GPU passthrough
-   - Apple Silicon Mac with MPS / MLX
-   - CPU-only execution on Windows is unaccelerated and takes several seconds per forward pass.
-
----
-
-## 5. How to Run the Real Decider 2B Server (When Hardware is Ready)
-
-When running on an instance with sufficient memory (e.g. an external server, GPU instance, or WSL2 with at least 8 GB allocated):
-
-### 1. Install Upstream Dependencies
-```bash
-pip install strands-decider
-```
-
-### 2. Start the Inference Server
-```bash
-strands-decider serve StrandsAgents/strands-decider-2B-qwen3.5-v1-2610 --port 8099
-```
-
-### 3. Point CapacityX to the Server
-In PowerShell for local inference:
-```powershell
-$env:STRANDS_DECIDER_URL = "http://127.0.0.1:8099"
-```
-
-For an authenticated ngrok HTTP Basic Auth tunnel:
-```powershell
-$env:STRANDS_DECIDER_URL = "https://your-tunnel-subdomain.ngrok-free.app"
-$env:STRANDS_DECIDER_USERNAME = "your_ngrok_username"
-$env:STRANDS_DECIDER_PASSWORD = "your_ngrok_password"
-```
-
-Once the server answers `GET /health`, CapacityX will automatically switch from `SAFE_FALLBACK` to `STRANDS_DECIDER_2B_REAL` and display real model probabilities!
+- **Live Bedrock Blocker**: AWS accounts on the Free plan receive:
+  ```text
+  ValidationException: Operation not allowed
+  ```
+  when attempting to invoke foundation models via the Converse API.
+- **Safety Guarantee**: The orchestrator handles this exception gracefully. The application does not crash, no live AWS calls are made during normal operation or test execution, and the primary Strands Decider decision is preserved.
+- **Simulation Transparency**: When using the offline mock for tests, outputs are clearly stamped:
+  ```json
+  {
+    "status": "simulated_mock",
+    "is_simulated": true,
+    "disclaimer": "SIMULATED: Mock Bedrock operational reasoning for offline testing only. Not live AWS inference."
+  }
+  ```
+  **Under no circumstances is simulated mock output represented as real Bedrock inference.**
 
 ---
 
-## 6. Running Unit Tests
+## 5. Offline Test Execution
 
-To verify the decision pattern, request serialization, tool definitions, confidence thresholding, safe fallback logic, and HTTP Basic Auth tunnel security:
-
+Run the complete 38-test offline suite:
 ```powershell
-python -m unittest -v patterns/tests/test_strands_decider.py
+python -m unittest discover -s patterns/tests -p "test_*.py" -v
 ```
+
 Expected output:
 ```text
-Ran 13 tests in 0.007s
+Ran 38 tests in 8.50s
 OK
 ```
+
+Individual test suites:
+- `python -m unittest -v patterns/tests/test_strands_decider.py` (15 tests)
+- `python -m unittest -v patterns/tests/test_bedrock_nova_micro.py` (14 tests)
+- `python -m unittest -v patterns/tests/test_orchestrator.py` (9 tests)

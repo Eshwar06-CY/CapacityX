@@ -1,0 +1,25 @@
+# What the demo video shows. Each turn is typed into the demo UI against your real agent.
+# `narrate` describes the situation only; make_video.py appends what the decider actually decided,
+# so the narration never claims something that did not happen. Keep it under about 2.5 minutes.
+title: "Kit example: a support agent that cannot refund the wrong order"
+# The project slide (shown after the title): a one-line pitch and the features worth showing.
+pitch: "A store support agent that can refund and cancel orders, and cannot do it to the wrong order."
+features:
+  - "look up, refund and cancel orders in chat"
+  - "check every irreversible action with Strands Decider 2B before it runs"
+  - "send unsure cases to a human instead of guessing"
+  - "run on Amazon Bedrock AgentCore Runtime"
+# eager: true makes the agent act without asking, so the decision has mistakes to catch on camera.
+# The intro says so. Set it to false to show your agent's normal behaviour.
+eager: true
+intro: "This store support agent talks through Amazon Bedrock. For this demo it is told to act without asking, and Strands Decider 2B checks every refund or cancellation before it runs."
+# Used instead of `intro` when the video records the deployed agent and it was deployed without DEMO_EAGER=1.
+intro_normal: "This store support agent runs on Amazon Bedrock AgentCore Runtime and talks through Amazon Bedrock. Strands Decider 2B checks every refund or cancellation before it runs."
+turns:
+  - say: "My headphones are broken, I want my money back."
+    narrate: "The customer wants a refund but never says which order."
+  - say: "It's order A1002, refund the full amount please."
+    narrate: "Now the customer gives the order id and asks for the refund explicitly."
+  - say: "Is it possible to cancel an order after it ships?"
+    narrate: "This one is a question, not a request to act."
+outro: "One forward pass per decision, typed answers with a confidence the code can branch on, and Amazon Bedrock for the conversation."

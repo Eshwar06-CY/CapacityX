@@ -4,7 +4,7 @@ These models define the contract for shipment incident triage and tool-selection
 supporting both real Strands Decider 2B inference and safe deterministic fallbacks.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -96,11 +96,11 @@ class SimulatedOutcome(BaseModel):
     )
     engine: str = Field(
         default="SAFE_FALLBACK",
-        description="Engine identifier: STRANDS_DECIDER_2B_REAL or SAFE_FALLBACK",
+        description="Engine identifier: STRANDS_DECIDER_2B_REAL, AMAZON_BEDROCK_NOVA_MICRO, or SAFE_FALLBACK",
     )
     is_real_model: bool = Field(
         default=False,
-        description="Whether this outcome was produced by live Decider 2B model inference",
+        description="Whether this outcome was produced by live model inference (Strands Decider 2B or Amazon Bedrock Nova Micro)",
     )
     fallback_reason: Optional[str] = Field(
         default=None,
@@ -120,6 +120,10 @@ class SimulatedOutcome(BaseModel):
     deadline_met_projected: bool
     sla_risk_level: str
     customer_status_recommended: str
+    bedrock_validation: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional complementary operational reasoning from Amazon Bedrock Nova Micro.",
+    )
 
 
 class DecisionResponse(BaseModel):

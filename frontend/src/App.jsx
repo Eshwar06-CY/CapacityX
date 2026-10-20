@@ -74,6 +74,7 @@ export default function App() {
   const [activeScenarioId, setActiveScenarioId] = useState('scenario-1');
   const [backendHealth, setBackendHealth] = useState({ status: 'checking', message: 'Checking backend...' });
   const [modelStatus, setModelStatus] = useState({ status: 'checking', is_real_model_available: false });
+  const [bedrockStatus, setBedrockStatus] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [decisionResult, setDecisionResult] = useState(null);
   const [showJsonRaw, setShowJsonRaw] = useState(false);
@@ -96,9 +97,13 @@ export default function App() {
         if (data.strands_decider) {
           setModelStatus(data.strands_decider);
         }
+        if (data.amazon_bedrock) {
+          setBedrockStatus(data.amazon_bedrock);
+        }
       } else {
         setBackendHealth({ status: 'offline', message: `Backend responded with error at ${BACKEND_BASE_URL}` });
         setModelStatus({ status: 'offline', is_real_model_available: false });
+        setBedrockStatus(null);
       }
     } catch {
       setBackendHealth({
@@ -106,6 +111,7 @@ export default function App() {
         message: `Backend offline at ${BACKEND_BASE_URL} (run uvicorn in PowerShell)`,
       });
       setModelStatus({ status: 'offline', is_real_model_available: false });
+      setBedrockStatus(null);
     }
   };
 
@@ -300,6 +306,26 @@ export default function App() {
               {modelStatus.is_real_model_available ? 'Online (Real Model)' : 'Offline (Safe Fallback)'}
             </span>
           </div>
+
+          {bedrockStatus && (
+            <div
+              className="status-pill"
+              title={
+                bedrockStatus.enabled
+                  ? `Bedrock Nova Micro: ${bedrockStatus.mode} mode (${bedrockStatus.notice || ''})`
+                  : `Bedrock Reasoning: ${bedrockStatus.notice || 'Disabled'}`
+              }
+            >
+              <span
+                className={`status-dot ${
+                  bedrockStatus.status === 'live' ? 'online' : 'simulated'
+                }`}
+              />
+              <span>
+                Bedrock: {bedrockStatus.enabled ? (bedrockStatus.mode === 'mock' ? 'Mock (Offline)' : 'Live') : 'Disabled (Safe)'}
+              </span>
+            </div>
+          )}
 
           <button
             onClick={checkHealth}
@@ -810,6 +836,86 @@ export default function App() {
                   {decisionResult.outcome.customer_status_recommended}
                 </span>
               </div>
+
+              {/* Complementary Bedrock Operational Reasoning (System 2) */}
+              {decisionResult.outcome.bedrock_validation && (
+                <div
+                  style={{
+                    background:
+                      decisionResult.outcome.bedrock_validation.status === 'validated'
+                        ? 'rgba(16, 185, 129, 0.08)'
+                        : decisionResult.outcome.bedrock_validation.status === 'blocked_unverified'
+                        ? 'rgba(245, 158, 11, 0.08)'
+                        : 'rgba(99, 102, 241, 0.08)',
+                    border:
+                      decisionResult.outcome.bedrock_validation.status === 'validated'
+                        ? '1px solid rgba(16, 185, 129, 0.3)'
+                        : decisionResult.outcome.bedrock_validation.status === 'blocked_unverified'
+                        ? '1px solid rgba(245, 158, 11, 0.3)'
+                        : '1px solid rgba(99, 102, 241, 0.25)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '12px 14px',
+                    marginBottom: '20px',
+                    fontSize: '13px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <strong style={{ color: '#a5b4fc', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span>☁️</span> Amazon Bedrock Operational Reasoning (System 2)
+                    </strong>
+                    <span
+                      style={{
+                        fontSize: '10px',
+                        textTransform: 'uppercase',
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        fontWeight: '700',
+                        background:
+                          decisionResult.outcome.bedrock_validation.status === 'validated'
+                            ? 'rgba(16, 185, 129, 0.2)'
+                            : decisionResult.outcome.bedrock_validation.status === 'simulated_mock'
+                            ? 'rgba(148, 163, 184, 0.15)'
+                            : 'rgba(245, 158, 11, 0.15)',
+                        color:
+                          decisionResult.outcome.bedrock_validation.status === 'validated'
+                            ? 'var(--accent-emerald)'
+                            : decisionResult.outcome.bedrock_validation.status === 'simulated_mock'
+                            ? '#94a3b8'
+                            : 'var(--accent-amber)',
+                      }}
+                    >
+                      {decisionResult.outcome.bedrock_validation.status === 'simulated_mock'
+                        ? 'Simulated Mock'
+                        : decisionResult.outcome.bedrock_validation.status === 'disabled'
+                        ? 'Disabled (Default)'
+                        : decisionResult.outcome.bedrock_validation.status === 'blocked_unverified'
+                        ? 'Account Verification Required'
+                        : decisionResult.outcome.bedrock_validation.status}
+                    </span>
+                  </div>
+
+                  <p style={{ margin: '0 0 6px 0', color: '#94a3b8', fontSize: '12px' }}>
+                    {decisionResult.outcome.bedrock_validation.disclaimer}
+                  </p>
+
+                  {decisionResult.outcome.bedrock_validation.operational_notes?.length > 0 && (
+                    <ul style={{ margin: '0 0 6px 0', paddingLeft: '18px', color: '#cbd5e1', fontSize: '12px' }}>
+                      {decisionResult.outcome.bedrock_validation.operational_notes.map((note, idx) => (
+                        <li key={idx} style={{ marginBottom: '2px' }}>{note}</li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {decisionResult.outcome.bedrock_validation.recommended_precautions?.length > 0 && (
+                    <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px dashed rgba(255,255,255,0.1)' }}>
+                      <span style={{ fontSize: '11px', color: '#f59e0b', fontWeight: '600' }}>Operational Precautions: </span>
+                      <span style={{ fontSize: '12px', color: '#cbd5e1' }}>
+                        {decisionResult.outcome.bedrock_validation.recommended_precautions.join(' ')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Action State Breakdown Table */}
               <div className="comparison-section">

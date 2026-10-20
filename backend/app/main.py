@@ -11,6 +11,7 @@ Provides live health checks, model server connectivity status,
 and deterministic safe fallback routing when inference is offline.
 """
 
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,10 +20,13 @@ from typing import Any, Dict, List
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 
-# Ensure project root is in sys.path to import patterns cleanly
+# Ensure project root and backend directory are in sys.path
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 from app.models import (
     DecisionResponse,
@@ -40,7 +44,7 @@ app = FastAPI(
     title="CapacityX API",
     description=(
         "Logistics Incident Decision API integrating Strands Decider 2B typed tool selection "
-        "with automated safe fallback policies."
+        "and Amazon Bedrock Nova Micro with automated safe fallback policies."
     ),
     version="0.2.0",
 )
@@ -61,8 +65,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Instantiate Strands Decider agent (connects to STRANDS_DECIDER_URL or http://127.0.0.1:8099)
-decider = StrandsDecider2B()
+ENV_AI_PROVIDER = "CAPACITYX_AI_PROVIDER"
+ENV_ENABLE_BEDROCK = "CAPACITYX_ENABLE_BEDROCK"
+ENV_BEDROCK_MODE = "CAPACITYX_BEDROCK_MODE"
+
+
+def get_configured_agent():
+    """Instantiate CapacityX Orchestrator pairing Strands Decider 2B with optional Bedrock reasoning."""
+    enable_bedrock = os.environ.get(ENV_ENABLE_BEDROCK, "false").strip().lower() in {
+        "true", "1", "yes"
+    }
+    bedrock_mode = os.environ.get(
+        ENV_BEDROCK_MODE,
+        "mock" if enable_bedrock else "disabled",
+    ).strip().lower()
+
+    # Handle explicit provider toggle
+    legacy_provider = os.environ.get(ENV_AI_PROVIDER, "strands").strip().lower()
+    if legacy_provider in {"bedrock", "bedrock_nova_micro", "nova_micro"}:
+        enable_bedrock = True
+        if bedrock_mode == "disabled":
+            bedrock_mode = "mock"
+
+    from patterns.orchestrator import CapacityXOrchestrator
+    return CapacityXOrchestrator(
+        enable_bedrock=enable_bedrock,
+        bedrock_mode=bedrock_mode,
+    )
+
+
+# Instantiate decision orchestrator (Strands Decider 2B primary, Bedrock disabled by default)
+decider = get_configured_agent()
 
 
 @app.get("/", tags=["Root"])
@@ -87,9 +120,24 @@ def root() -> Dict[str, Any]:
 @app.get("/health", tags=["Health"])
 @app.get("/api/health", tags=["Health"])
 def health_check() -> Dict[str, Any]:
-    """Backend and Strands Decider service health check endpoint."""
+    """Backend and decision service health check endpoint."""
     model_health = decider.get_health_status()
-    is_live = model_health["is_real_model_available"]
+    is_live = model_health.get("is_real_model_available", False)
+    provider_name = getattr(decider, "provider_name", "strands_orchestrated")
+
+    strands_info = model_health.get("strands_decider", model_health)
+    bedrock_info = model_health.get("amazon_bedrock", {})
+
+    server_url = getattr(decider, "server_url", strands_info.get("server_url", "http://127.0.0.1:8099"))
+    if is_live:
+        ai_engine = f"STRANDS_DECIDER_2B_REAL ({strands_info.get('checkpoint', 'active')})"
+    else:
+        ai_engine = f"SAFE_FALLBACK_POLICY (Live Strands Decider server is offline at {server_url})"
+
+    if bedrock_info.get("status") in {"simulated_mock_ready", "simulated_mock"}:
+        ai_engine += " + BEDROCK_OPERATIONAL_REASONING (Simulated Mock)"
+    elif bedrock_info.get("status") == "validated":
+        ai_engine += " + BEDROCK_OPERATIONAL_REASONING (Live Validated)"
 
     return {
         "status": "healthy",
@@ -97,12 +145,11 @@ def health_check() -> Dict[str, Any]:
         "service": "capacityx-backend",
         "version": "0.2.0",
         "environment": "local-development",
-        "strands_decider": model_health,
-        "ai_engine": (
-            f"STRANDS_DECIDER_2B_REAL ({model_health.get('checkpoint', 'active')})"
-            if is_live
-            else f"SAFE_FALLBACK_POLICY (Live Strands Decider server is offline at {decider.server_url})"
-        ),
+        "ai_provider": provider_name,
+        "strands_decider": strands_info,
+        "amazon_bedrock": bedrock_info,
+        "orchestration": model_health.get("orchestration"),
+        "ai_engine": ai_engine,
     }
 
 
@@ -300,13 +347,17 @@ def evaluate_decision(payload: ShipmentIncidentRequest) -> DecisionResponse:
         deadline_met_projected=decider_outcome.deadline_met_projected,
         sla_risk_level=decider_outcome.sla_risk_level,
         customer_status_recommended=customer_rec,
+        bedrock_validation=decider_outcome.metadata.get("bedrock_validation"),
     )
 
-    disclaimer = (
-        "REAL MODEL INFERENCE: Evaluated with Strands Decider 2B."
-        if decider_outcome.is_real_model
-        else f"SAFE FALLBACK APPLIED: {decider_outcome.fallback_reason}"
-    )
+    if decider_outcome.is_real_model:
+        disclaimer = f"REAL MODEL INFERENCE: Evaluated with Strands Decider 2B ({decider_outcome.model_id})."
+    else:
+        disclaimer = f"SAFE FALLBACK APPLIED: {decider_outcome.fallback_reason}"
+
+    bedrock_meta = decider_outcome.metadata.get("bedrock_validation", {})
+    if bedrock_meta.get("disclaimer"):
+        disclaimer += f" | {bedrock_meta['disclaimer']}"
 
     return DecisionResponse(
         is_simulated=not decider_outcome.is_real_model,
