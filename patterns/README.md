@@ -43,9 +43,12 @@ All orchestration pathways strictly map to the 5 canonical logistics actions:
 
 | Variable | Values | Description |
 |---|---|---|
-| `STRANDS_DECIDER_URL` | URL string | Strands Decider inference endpoint (e.g. ngrok tunnel or `http://127.0.0.1:8099`) |
-| `STRANDS_DECIDER_USERNAME` | string | Optional HTTP Basic Auth username |
-| `STRANDS_DECIDER_PASSWORD` | string | Optional HTTP Basic Auth password |
+| `DECIDER_API_KEY` | string | Official hosted Strands Decider API key (Bearer token). Activates hosted mode automatically. |
+| `DECIDER_MODE` | `ugmdu` | Optional hosted mode selector |
+| `DECIDER_URL` | URL string | Optional decider URL override (defaults to `https://da25tnxy06gjk.cloudfront.net` in hosted mode) |
+| `STRANDS_DECIDER_URL` | URL string | Optional local or ngrok decider URL (defaults to `http://127.0.0.1:8099`) |
+| `STRANDS_DECIDER_USERNAME` | string | Optional HTTP Basic Auth username for local server |
+| `STRANDS_DECIDER_PASSWORD` | string | Optional HTTP Basic Auth password for local server |
 | `CAPACITYX_ENABLE_BEDROCK` | `false` (default) / `true` | Enable or disable Bedrock operational reasoning |
 | `CAPACITYX_BEDROCK_MODE` | `disabled` (default) / `mock` / `live` | Operational mode for the Bedrock component |
 | `BEDROCK_MODEL_ID` | `amazon.nova-micro-v1:0` | Target Amazon Bedrock foundation model |
@@ -75,18 +78,18 @@ All orchestration pathways strictly map to the 5 canonical logistics actions:
 
 ## 5. Offline Test Execution
 
-Run the complete 38-test offline suite:
+Run the complete 47-test offline suite:
 ```powershell
 python -m unittest discover -s patterns/tests -p "test_*.py" -v
 ```
 
 Expected output:
 ```text
-Ran 38 tests in 8.50s
+Ran 47 tests in ~8.8s
 OK
 ```
 
 Individual test suites:
-- `python -m unittest -v patterns/tests/test_strands_decider.py` (15 tests)
+- `python -m unittest -v patterns/tests/test_strands_decider.py` (24 tests: core decider, thresholds, auth, hosted CloudFront API)
 - `python -m unittest -v patterns/tests/test_bedrock_nova_micro.py` (14 tests)
 - `python -m unittest -v patterns/tests/test_orchestrator.py` (9 tests)

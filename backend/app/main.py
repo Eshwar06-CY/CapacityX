@@ -28,6 +28,15 @@ if str(ROOT_DIR) not in sys.path:
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+# Load environment variables from consolidated root .env if present
+_root_env = ROOT_DIR / ".env"
+if _root_env.is_file():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=_root_env, override=False)
+    except ImportError:
+        pass
+
 from app.models import (
     DecisionResponse,
     ShipmentIncidentRequest,
@@ -335,6 +344,7 @@ def evaluate_decision(payload: ShipmentIncidentRequest) -> DecisionResponse:
         model_confidence=decider_outcome.model_confidence,
         alternatives=decider_outcome.alternatives,
         human_review_required=decider_outcome.human_review_required,
+        human_review_reason=decider_outcome.human_review_reason,
         engine=decider_outcome.engine,
         is_real_model=decider_outcome.is_real_model,
         fallback_reason=decider_outcome.fallback_reason,
@@ -365,6 +375,10 @@ def evaluate_decision(payload: ShipmentIncidentRequest) -> DecisionResponse:
         environment="LOCAL_REAL_MODEL" if decider_outcome.is_real_model else "LOCAL_SAFE_FALLBACK",
         disclaimer=disclaimer,
         shipment_id=payload.shipment_id,
+        delivery_deadline=payload.delivery_deadline,
+        cargo_type=payload.cargo_type,
+        origin=payload.origin,
+        destination=payload.destination,
         timestamp=now_iso,
         outcome=outcome_model,
     )

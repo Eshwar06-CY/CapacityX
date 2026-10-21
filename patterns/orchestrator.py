@@ -423,9 +423,13 @@ class CapacityXOrchestrator:
             # If Bedrock operational audit flags an issue, require human confirmation
             if not validation_result.operational_validation:
                 outcome.human_review_required = True
-                outcome.rationale.append(
-                    "[Bedrock Safety Flag] Operational check flagged logistical risk; human confirmation required."
+                bedrock_reason = "Bedrock operational safety check flagged logistical risk; human confirmation required."
+                outcome.human_review_reason = (
+                    f"{outcome.human_review_reason} | {bedrock_reason}"
+                    if outcome.human_review_reason
+                    else bedrock_reason
                 )
+                outcome.rationale.append(f"[Bedrock Safety Flag] {bedrock_reason}")
         elif validation_result.status == "blocked_unverified":
             outcome.rationale.append(
                 f"[Bedrock Notice] Live inference blocked: {validation_result.error_reason}. Strands decision preserved."

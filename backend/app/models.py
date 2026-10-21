@@ -94,6 +94,10 @@ class SimulatedOutcome(BaseModel):
         default=False,
         description="Flag indicating human dispatcher confirmation is mandatory",
     )
+    human_review_reason: Optional[str] = Field(
+        default=None,
+        description="Detailed operational or model explanation if human review is required",
+    )
     engine: str = Field(
         default="SAFE_FALLBACK",
         description="Engine identifier: STRANDS_DECIDER_2B_REAL, AMAZON_BEDROCK_NOVA_MICRO, or SAFE_FALLBACK",
@@ -136,5 +140,21 @@ class DecisionResponse(BaseModel):
         "to confirm if this decision originated from the live Strands Decider 2B model or the deterministic safe fallback."
     )
     shipment_id: str
+    delivery_deadline: Optional[str] = Field(
+        default=None,
+        description="Evaluated target delivery deadline",
+    )
+    cargo_type: Optional[str] = Field(
+        default=None,
+        description="Evaluated cargo classification",
+    )
+    origin: Optional[str] = Field(
+        default=None,
+        description="Evaluated origin depot",
+    )
+    destination: Optional[str] = Field(
+        default=None,
+        description="Evaluated destination hub",
+    )
     timestamp: str
     outcome: SimulatedOutcome

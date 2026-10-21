@@ -21,9 +21,13 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from patterns.strands_decider_2b import (
+    ENV_DECIDER_API_KEY,
+    ENV_DECIDER_MODE,
     ENV_DECIDER_PASSWORD,
+    ENV_DECIDER_URL,
     ENV_DECIDER_USERNAME,
     LOGISTICS_TOOLS,
+    UGMDU_DECIDER_URL,
     ConfigurationError,
     IncidentContext,
     ServerUnavailableError,
@@ -116,7 +120,10 @@ class TestStrandsDecider2B(unittest.TestCase):
         self.assertAlmostEqual(outcome.model_confidence, 0.884)
         self.assertIn("dispatch_replacement", outcome.alternatives)
         self.assertFalse(outcome.human_review_required)
+        self.assertIsNone(outcome.human_review_reason)
         self.assertIsNone(outcome.fallback_reason)
+        self.assertTrue(any("SATISFIED" in r for r in outcome.rationale))
+        self.assertTrue(any("CLEAR" in r for r in outcome.rationale))
 
     @patch.object(StrandsDeciderClient, "ask")
     def test_real_model_response_low_confidence_triggers_human_review(self, mock_ask):
@@ -154,6 +161,9 @@ class TestStrandsDecider2B(unittest.TestCase):
         self.assertTrue(outcome.is_real_model)
         self.assertEqual(outcome.selected_action, "reroute_shipment")
         self.assertTrue(outcome.human_review_required, "Low confidence must flag human review.")
+        self.assertIsNotNone(outcome.human_review_reason)
+        self.assertIn("54.0%", outcome.human_review_reason)
+        self.assertTrue(any("BELOW THRESHOLD" in r for r in outcome.rationale))
 
     @patch.object(StrandsDeciderClient, "ask")
     def test_real_model_exact_confidence_threshold_allows_automated_action(self, mock_ask):
@@ -196,6 +206,8 @@ class TestStrandsDecider2B(unittest.TestCase):
             outcome.human_review_required,
             "Exact confidence threshold of 0.70 with human_review score < 0.5 must not require human review.",
         )
+        self.assertIsNone(outcome.human_review_reason)
+        self.assertTrue(any("SATISFIED (70.0% >= 70%)" in r for r in outcome.rationale))
 
     @patch.object(StrandsDeciderClient, "ask")
     def test_real_model_human_review_signal_independently_triggers_review(self, mock_ask):
@@ -238,6 +250,66 @@ class TestStrandsDecider2B(unittest.TestCase):
             outcome.human_review_required,
             "High human_review noul (0.80 >= 0.5) must independently trigger review even when confidence is 0.90.",
         )
+        self.assertIsNotNone(outcome.human_review_reason)
+        self.assertIn("P(review) = 0.80", outcome.human_review_reason)
+        # Verify threshold is SATISFIED and NOT falsely labeled as LOW/FLAGGED
+        self.assertTrue(
+            any("SATISFIED (90.0% >= 70%)" in r for r in outcome.rationale),
+            "Confidence threshold must report SATISFIED when confidence exceeds 70%.",
+        )
+        self.assertTrue(
+            any("FLAGGED" in r for r in outcome.rationale),
+            "Human review safeguard bullet must report FLAGGED.",
+        )
+
+    @patch.object(StrandsDeciderClient, "ask")
+    def test_no_contradictory_confidence_threshold_warning_when_confidence_is_high(self, mock_ask):
+        """When confidence is ~93% and human review is flagged, ensure no contradictory 'low threshold' warning is shown."""
+        mock_ask.return_value = {
+            "action": {
+                "type": "choice",
+                "choice": "dispatch_replacement",
+                "confidence": 0.930,
+                "probabilities": {
+                    "dispatch_replacement": 0.930,
+                    "crossdock": 0.040,
+                    "reroute_shipment": 0.020,
+                    "escalate_to_human": 0.007,
+                    "continue_monitoring": 0.003,
+                },
+            },
+            "is_urgent": {"type": "noul", "noul": 0.95},
+            "human_review": {"type": "noul", "noul": 0.85},
+            "urgency_tier": {"type": "choice", "choice": "CRITICAL"},
+        }
+
+        incident = IncidentContext(
+            shipment_id="SHP-8921-COLD",
+            delivery_deadline="2026-10-21T18:00:00Z",
+            truck_breakdown=True,
+            breakdown_severity="CRITICAL",
+            replacement_vehicle_available=True,
+            customer_notified=False,
+            cargo_type="Cold-Chain Perishables (Frozen Seafood)",
+        )
+
+        outcome = self.decider.evaluate(incident)
+
+        self.assertEqual(outcome.engine, "STRANDS_DECIDER_2B_REAL")
+        self.assertTrue(outcome.is_real_model)
+        self.assertEqual(outcome.selected_action, "dispatch_replacement")
+        self.assertAlmostEqual(outcome.model_confidence, 0.930, places=3)
+        self.assertTrue(outcome.human_review_required)
+
+        # The reason must explicitly cite the human-review safeguard, not a low confidence threshold
+        self.assertIn("P(review) = 0.85 >= 0.50", outcome.human_review_reason)
+        self.assertNotIn("below safety threshold", outcome.human_review_reason)
+
+        # Rationale must state confidence threshold is SATISFIED (93.0% >= 70%)
+        rationale_text = " ".join(outcome.rationale)
+        self.assertIn("Confidence threshold (70%): SATISFIED (93.0% >= 70%)", rationale_text)
+        self.assertNotIn("Confidence threshold (70%): LOW/FLAGGED", rationale_text)
+        self.assertIn("Human review safeguard: FLAGGED", rationale_text)
 
     @patch.object(StrandsDeciderClient, "ask")
     def test_safe_fallback_when_inference_server_unreachable(self, mock_ask):
@@ -467,6 +539,182 @@ class TestStrandsDeciderAuthentication(unittest.TestCase):
         self.assertNotIn(token, repr_str)
         self.assertNotIn(token, str_str)
         self.assertIn("authenticated", repr_str)
+
+
+class TestStrandsDeciderHostedAPI(unittest.TestCase):
+    """Test suite for the official hosted Strands Decider CloudFront API."""
+
+    def setUp(self):
+        self.incident = IncidentContext(
+            shipment_id="SHP-HOSTED-01",
+            delivery_deadline="2026-10-20T17:00:00Z",
+            truck_breakdown=True,
+            breakdown_severity="MODERATE",
+            replacement_vehicle_available=True,
+            customer_notified=False,
+            cargo_type="Standard Logistics Freight",
+        )
+
+    def test_hosted_mode_env_activation_and_url_default(self):
+        """When DECIDER_API_KEY is configured, client defaults to CloudFront URL with Bearer auth."""
+        with patch.dict(os.environ, {ENV_DECIDER_API_KEY: "dcd_live_test_key_123"}, clear=True):
+            client = StrandsDeciderClient()
+            self.assertTrue(client.is_hosted)
+            self.assertTrue(client.is_authenticated)
+            self.assertEqual(client.url, UGMDU_DECIDER_URL)
+            self.assertEqual(client.auth_type, "bearer")
+            self.assertEqual(client._auth_header, "Bearer dcd_live_test_key_123")
+
+    @patch("urllib.request.urlopen")
+    def test_hosted_request_body_schema_strictness(self, mock_urlopen):
+        """Hosted POST /v1/decide must contain ONLY 'state' and 'questions' (strictly no model or generation params)."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            "answers": {
+                "action": {"type": "choice", "choice": "reroute_shipment", "confidence": 0.85, "probabilities": {"reroute_shipment": 0.85}},
+                "is_urgent": {"type": "noul", "noul": 0.40},
+                "human_review": {"type": "noul", "noul": 0.10},
+                "urgency_tier": {"type": "choice", "choice": "MODERATE"},
+            },
+            "usage": {"input_tokens": 55},
+        }).encode("utf-8")
+        mock_response.__enter__.return_value = mock_response
+        mock_response.__exit__.return_value = None
+        mock_urlopen.return_value = mock_response
+
+        client = StrandsDeciderClient(
+            url="https://da25tnxy06gjk.cloudfront.net",
+            api_key="dcd_live_fake_key",
+        )
+        questions = {
+            "action": {"type": "choice", "instructions": "Select tool", "criteria": LOGISTICS_TOOLS},
+            "is_urgent": {"type": "noul", "instructions": "Urgent?"},
+        }
+        client.ask(state="Shipment SHP-1 incident", questions=questions)
+
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual(req.full_url, "https://da25tnxy06gjk.cloudfront.net/v1/decide")
+        self.assertEqual(req.get_method(), "POST")
+        self.assertEqual(req.get_header("Authorization"), "Bearer dcd_live_fake_key")
+        self.assertEqual(req.get_header("Content-type"), "application/json")
+
+        # Inspect request body JSON
+        sent_body = json.loads(req.data.decode("utf-8"))
+        self.assertIn("state", sent_body)
+        self.assertIn("questions", sent_body)
+        self.assertEqual(len(sent_body.keys()), 2, "Body must contain strictly 'state' and 'questions'.")
+        self.assertNotIn("model", sent_body)
+        self.assertNotIn("max_tokens", sent_body)
+        self.assertNotIn("temperature", sent_body)
+        self.assertNotIn("messages", sent_body)
+
+    @patch.object(StrandsDeciderClient, "ask")
+    def test_hosted_successful_choice_and_probability_parsing(self, mock_ask):
+        """Verify successful parsing of genuine choice, probability distribution, and confidence."""
+        mock_ask.return_value = {
+            "action": {
+                "type": "choice",
+                "choice": "crossdock",
+                "probabilities": {
+                    "crossdock": 0.842,
+                    "dispatch_replacement": 0.088,
+                    "reroute_shipment": 0.040,
+                    "escalate_to_human": 0.020,
+                    "continue_monitoring": 0.010,
+                },
+                "confidence": 0.842,
+            },
+            "is_urgent": {"type": "noul", "noul": 0.55},
+            "human_review": {"type": "noul", "noul": 0.15},
+            "urgency_tier": {"type": "choice", "choice": "MODERATE"},
+        }
+
+        decider = StrandsDecider2B(api_key="dcd_live_test")
+        outcome = decider.evaluate(self.incident)
+
+        self.assertEqual(outcome.engine, "STRANDS_DECIDER_2B_REAL")
+        self.assertTrue(outcome.is_real_model)
+        self.assertEqual(outcome.selected_action, "crossdock")
+        self.assertAlmostEqual(outcome.model_confidence, 0.842, places=3)
+        self.assertEqual(outcome.alternatives["crossdock"], 0.842)
+        self.assertFalse(outcome.human_review_required)
+
+    @patch.object(StrandsDeciderClient, "ask")
+    def test_hosted_empty_action_answer_triggers_safe_fallback(self, mock_ask):
+        """Simulate user's bug: empty action answer or empty answers payload safely engages fallback."""
+        # 1. Empty answers dict
+        mock_ask.return_value = {}
+        decider = StrandsDecider2B(api_key="dcd_live_test")
+        outcome = decider.evaluate(self.incident)
+        self.assertEqual(outcome.engine, "SAFE_FALLBACK")
+        self.assertFalse(outcome.is_real_model)
+        self.assertTrue(outcome.human_review_required)
+        self.assertIn("empty or non-dictionary answers payload", outcome.fallback_reason)
+
+        # 2. Empty action dict inside answers
+        mock_ask.return_value = {"action": {}}
+        outcome2 = decider.evaluate(self.incident)
+        self.assertEqual(outcome2.engine, "SAFE_FALLBACK")
+        self.assertTrue(outcome2.human_review_required)
+        self.assertIn("missing or empty 'action' answer", outcome2.fallback_reason)
+
+    @patch.object(StrandsDeciderClient, "ask")
+    def test_hosted_invalid_action_choice_rejected(self, mock_ask):
+        """Invalid action outside permitted schema is rejected and triggers safe fallback."""
+        mock_ask.return_value = {
+            "action": {
+                "type": "choice",
+                "choice": "unauthorized_fly_drone_action",
+                "confidence": 0.99,
+            },
+            "is_urgent": {"type": "noul", "noul": 0.1},
+            "human_review": {"type": "noul", "noul": 0.1},
+        }
+
+        decider = StrandsDecider2B(api_key="dcd_live_test")
+        outcome = decider.evaluate(self.incident)
+        self.assertEqual(outcome.engine, "SAFE_FALLBACK")
+        self.assertTrue(outcome.human_review_required)
+        self.assertIn("Invalid action choice", outcome.fallback_reason)
+
+    @patch("urllib.request.urlopen")
+    def test_hosted_health_check_queries_v1_models(self, mock_urlopen):
+        """Hosted health check must query GET /v1/models with Bearer auth."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({"models": ["hobson-v19"], "status": "ok"}).encode("utf-8")
+        mock_response.__enter__.return_value = mock_response
+        mock_response.__exit__.return_value = None
+        mock_urlopen.return_value = mock_response
+
+        client = StrandsDeciderClient(api_key="dcd_live_health_test")
+        info = client.health()
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual(req.full_url, "https://da25tnxy06gjk.cloudfront.net/v1/models")
+        self.assertEqual(req.get_header("Authorization"), "Bearer dcd_live_health_test")
+        self.assertEqual(info.get("status"), "ok")
+
+    @patch.object(StrandsDeciderClient, "ask")
+    def test_hosted_network_timeout_triggers_safe_fallback(self, mock_ask):
+        """When hosted CloudFront API times out, safe fallback deterministically engages."""
+        mock_ask.side_effect = ServerUnavailableError("HTTP Error 429: Rate limited; retry")
+        decider = StrandsDecider2B(api_key="dcd_live_test")
+        outcome = decider.evaluate(self.incident)
+        self.assertEqual(outcome.engine, "SAFE_FALLBACK")
+        self.assertFalse(outcome.is_real_model)
+        self.assertTrue(outcome.human_review_required)
+        self.assertIn("Rate limited", outcome.fallback_reason)
+
+    def test_hosted_repr_masks_api_key(self):
+        """Hosted client repr must mask API key and never leak credentials."""
+        client = StrandsDeciderClient(api_key="dcd_live_confidential_key_99999")
+        repr_str = repr(client)
+        str_str = str(client)
+        self.assertNotIn("confidential", repr_str)
+        self.assertNotIn("confidential", str_str)
+        self.assertNotIn("99999", repr_str)
+        self.assertNotIn("99999", str_str)
+        self.assertIn("mode=hosted", repr_str)
+        self.assertIn("bearer", repr_str)
 
 
 if __name__ == "__main__":
