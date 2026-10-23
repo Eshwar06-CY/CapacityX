@@ -125,3 +125,46 @@ def test_check_measured_status_on_unmeasured_llm():
     assert "LLM baseline could not be measured" in out.stdout
     assert out.returncode == 0
 
+
+def test_article_draft_fails_gracefully_when_bedrock_credentials_missing(monkeypatch):
+    import os
+    env = os.environ.copy()
+    env["AWS_ACCESS_KEY_ID"] = ""
+    env["AWS_SECRET_ACCESS_KEY"] = ""
+    env["AWS_SECURITY_TOKEN"] = ""
+    env["AWS_SESSION_TOKEN"] = ""
+    env["AWS_PROFILE"] = "nonexistent_profile_xyz"
+    env["LLM_PROVIDER"] = "bedrock"
+
+    out = subprocess.run([sys.executable, "scripts/article.py", "--draft"], cwd=ROOT, capture_output=True, text=True, env=env)
+    assert out.returncode == 0
+    assert "unavailable" in out.stdout
+    assert "Falling back to deterministic offline template draft" in out.stdout
+    body = (ROOT / "submission" / "article" / "body.md").read_text(encoding="utf-8")
+    assert "<!-- Template/Offline Draft" in body
+    assert "Built with the AWS User Group Madurai Strands Decider hackathon kit" in body
+
+
+def test_article_draft_offline_flag():
+    out = subprocess.run([sys.executable, "scripts/article.py", "--draft", "--offline"], cwd=ROOT, capture_output=True, text=True)
+    assert out.returncode == 0
+    assert "offline drafting requested" in out.stdout
+    body = (ROOT / "submission" / "article" / "body.md").read_text(encoding="utf-8")
+    assert "<!-- Template/Offline Draft" in body
+
+
+def test_article_body_preserves_unmeasured_llm_baseline():
+    body = (ROOT / "submission" / "article" / "body.md").read_text(encoding="utf-8")
+    assert "us.amazon.nova-pro-v1:0" in body
+    assert "| Accuracy | 61.5% | N/A |" in body
+    assert "| Cost per 1,000 decisions | $0.0350 | N/A |" in body
+    assert "baseline metrics remain unmeasured (N/A)" in body
+
+
+def test_check_submission_article_passes():
+    out = subprocess.run([sys.executable, "scripts/check_submission.py", "--only", "article"], cwd=ROOT, capture_output=True, text=True)
+    assert out.returncode == 0
+    assert "PASS" in out.stdout and "tags" in out.stdout
+    assert "0 FAIL" in out.stdout
+
+

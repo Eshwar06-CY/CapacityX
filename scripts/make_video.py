@@ -61,7 +61,25 @@ def duration(path: Path) -> float:
 
 
 def tts(text: str, out: Path) -> Path:
-    """Speech for `text` as an mp3: Amazon Polly (neural) if AWS works, else macOS `say`."""
+    """Speech for `text` as an mp3: Windows SAPI, Amazon Polly (neural) if configured, or macOS `say`."""
+    if sys.platform == "win32":
+        try:
+            wav = out.with_suffix(".wav")
+            wav_str = str(wav.resolve()).replace("\\", "/")
+            escaped_text = text.replace('"', '`"').replace("'", "''")
+            ps = f"""
+            Add-Type -AssemblyName System.Speech
+            $speaker = New-Object System.Speech.Synthesis.SpeechSynthesizer
+            $speaker.SetOutputToWaveFile('{wav_str}')
+            $speaker.Speak('{escaped_text}')
+            $speaker.Dispose()
+            """
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run([ffmpeg(), "-y", "-i", str(wav), str(out)])
+            wav.unlink(missing_ok=True)
+            return out
+        except Exception:
+            pass
     try:
         import boto3
 
@@ -79,6 +97,7 @@ def tts(text: str, out: Path) -> Path:
             run([ffmpeg(), "-y", "-i", str(aiff), str(out)])
             return out
         raise RuntimeError(f"no text-to-speech available (Polly failed: {e}; no `say`)") from e
+
 
 
 def facts_for(turn_out: dict) -> str:
@@ -283,7 +302,7 @@ def main() -> None:
                  "custom": "on a hosted endpoint"}.get(full.get("decider_mode", ""), "")
         txt = (f"On {dsum['decisions']} labelled decisions, with the decider {where}, Strands Decider was "
                f"{dsum['accuracy']:.0%} accurate at a median of {dsum['latency_p50_ms']:.0f} milliseconds")
-        if lsum:
+        if lsum and isinstance(lsum.get("accuracy"), (int, float)):
             who = {"bedrock": "the Bedrock LLM", "local": "a local LLM", "ugmdu": "a hosted open LLM"}.get(full.get("llm_provider", "bedrock"), "the LLM")
             txt += f", against {lsum['accuracy']:.0%} and {lsum['latency_p50_ms']:.0f} milliseconds for {who} asked the same questions"
         txt += "."

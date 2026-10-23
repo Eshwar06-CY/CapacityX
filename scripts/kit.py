@@ -248,6 +248,7 @@ COMMANDS = {
     "bench": lambda a: pyrun("-m", "decider_kit.bench", "--cases", "agent/eval_cases.jsonl", "--questions", "agent.decision:QUESTIONS",
                              "--out", "submission/bench", *a),
     "agentcore-cli": lambda a: sys.exit(tools.main(["install", "agentcore", *a])),
+    "package": lambda a: pyrun("scripts/deploy.py", "package", *a),
     "deploy": lambda a: pyrun("scripts/deploy.py", "deploy", *a),
     "invoke": lambda a: pyrun("scripts/deploy.py", "invoke", " ".join(a) or "Hello, what can you do?"),
     "destroy": lambda a: pyrun("scripts/deploy.py", "destroy", *a),

@@ -71,21 +71,37 @@ def agent_model(model_id: str | None = None, p: str | None = None, **kw: Any) ->
     """A Strands model for an Agent, from LLM_PROVIDER (or `p`), with `model_id` or the default."""
     p = p or provider()
     mid = model_id or default_model_id(p)
+
     if p == "bedrock":
         from strands.models import BedrockModel
+        from .config import load_dotenv
 
-        return BedrockModel(model_id=mid, region_name=settings().aws_region, **kw)
+        load_dotenv()
+        api_key = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+
+        return BedrockModel(
+            model_id=mid,
+            region_name=settings().aws_region,
+            api_key=api_key,
+            **kw,
+        )
+
     if p == "local":
         from strands.models.ollama import OllamaModel
 
-        # Qwen3.5 thinks before answering by default; off unless LLM_THINK=1 (faster turns, fewer tokens)
         kw.setdefault("additional_args", {"think": os.environ.get("LLM_THINK", "0") == "1"})
         return OllamaModel(os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"), model_id=mid, **kw)
+
     from strands.models.openai import OpenAIModel
 
     url = os.environ.get("UGMDU_LLM_URL", UGMDU_DECIDER_URL).rstrip("/") + "/v1"
     key = os.environ.get("LLM_API_KEY") or settings().decider_api_key
-    return OpenAIModel(client_args={"base_url": url, "api_key": key or "none"}, model_id=mid, params=kw.pop("params", {}), **kw)
+    return OpenAIModel(
+        client_args={"base_url": url, "api_key": key or "none"},
+        model_id=mid,
+        params=kw.pop("params", {}),
+        **kw,
+    )
 
 
 def describe(p: str | None = None, model_id: str | None = None) -> str:

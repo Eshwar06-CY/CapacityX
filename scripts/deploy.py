@@ -155,7 +155,9 @@ def package() -> None:
         dst = APP / name
         if dst.exists():
             shutil.rmtree(dst)
-        shutil.copytree(ROOT / name, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "eval_cases.jsonl", "demo_script.yaml"))
+        shutil.copytree(ROOT / name, dst, ignore=shutil.ignore_patterns(
+            "__pycache__", "*.pyc", "*.pyo", ".pytest_cache", "eval_cases.jsonl", "demo_script.yaml", ".env*"
+        ))
 
 
 def deploy() -> None:
@@ -253,6 +255,9 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "deploy"
     if cmd == "deploy":
         deploy()
+    elif cmd == "package":
+        package()
+        print(f"[package] copied agent/ and decider_kit/ into {APP}")
     elif cmd == "invoke":
         print(json.dumps(invoke(" ".join(sys.argv[2:]) or "Hello, what can you do?"), indent=1))
     elif cmd == "destroy":
