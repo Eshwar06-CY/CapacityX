@@ -20,15 +20,37 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
+
+# Load environment variables from consolidated root .env if present
+_root_env = Path(__file__).resolve().parent.parent / ".env"
+if _root_env.is_file():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=_root_env, override=False)
+    except ImportError:
+        pass
 
 # Official upstream references
 DEFAULT_MODEL_ID = "StrandsAgents/strands-decider-2B-qwen3.5-v1-2610"
-ENV_DECIDER_URL = "STRANDS_DECIDER_URL"
+DEFAULT_LOCAL_URL = "http://127.0.0.1:8099"
+UGMDU_DECIDER_URL = "https://da25tnxy06gjk.cloudfront.net"
+
+# Environment variable keys
+ENV_DECIDER_API_KEY = "DECIDER_API_KEY"
+ENV_DECIDER_URL = "DECIDER_URL"
+ENV_DECIDER_MODE = "DECIDER_MODE"
+
+ENV_STRANDS_DECIDER_URL = "STRANDS_DECIDER_URL"
 ENV_DECIDER_USERNAME = "STRANDS_DECIDER_USERNAME"
 ENV_DECIDER_PASSWORD = "STRANDS_DECIDER_PASSWORD"
 
-DEFAULT_DECIDER_URL = os.environ.get(ENV_DECIDER_URL, "http://127.0.0.1:8099")
+DEFAULT_DECIDER_URL = (
+    os.environ.get(ENV_DECIDER_URL)
+    or os.environ.get(ENV_STRANDS_DECIDER_URL)
+    or DEFAULT_LOCAL_URL
+)
 CONFIDENCE_THRESHOLD = 0.70  # Decisions below 70% confidence require human review
 
 # The 5 typed logistics action tools
@@ -97,6 +119,7 @@ class DeciderOutcome:
     model_id: str = DEFAULT_MODEL_ID
     is_simulated: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
+    human_review_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -110,6 +133,7 @@ class DeciderOutcome:
             "sla_risk_level": self.sla_risk_level,
             "customer_action_required": self.customer_action_required,
             "human_review_required": self.human_review_required,
+            "human_review_reason": self.human_review_reason,
             "engine": self.engine,
             "is_real_model": self.is_real_model,
             "model_confidence": self.model_confidence,
@@ -130,39 +154,70 @@ class ConfigurationError(ValueError):
 
 
 class StrandsDeciderClient:
-    """Official synchronous HTTP client for a running Strands Decider 2B inference server.
+    """Official synchronous HTTP client for Strands Decider 2B.
 
-    Adheres strictly to the upstream client contract in `examples/strands/_client.py`:
-    - Endpoint: `POST {url}/v1/systemone`
-    - Health: `GET {url}/health`
-
-    Supports optional HTTP Basic Authentication (e.g. for authenticated ngrok tunnels)
-    via STRANDS_DECIDER_USERNAME and STRANDS_DECIDER_PASSWORD.
+    Supports both:
+    1. Official Hosted CloudFront API (UG Madurai / team API key):
+       - Base URL: https://da25tnxy06gjk.cloudfront.net
+       - Endpoint: POST /v1/decide
+       - Health: GET /v1/models
+       - Auth: Authorization: Bearer <DECIDER_API_KEY>
+       - Payload: {"state": state, "questions": dict(questions)} (strictly no model or generation parameters)
+    2. Local server or authenticated ngrok tunnel:
+       - Endpoint: POST /v1/systemone
+       - Health: GET /health
+       - Auth: Optional HTTP Basic (STRANDS_DECIDER_USERNAME & STRANDS_DECIDER_PASSWORD)
+       - Payload: {"state": state, "model": model_id, "questions": dict(questions)}
     """
 
     def __init__(
         self,
-        url: str = DEFAULT_DECIDER_URL,
-        timeout: float = 30.0,
+        url: Optional[str] = None,
+        api_key: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        timeout: float = 30.0,
     ) -> None:
-        self.url = url.rstrip("/")
-        self.timeout = timeout
-
-        # Read username/password from arguments or environment variables
+        # Resolve Basic Auth credentials (for local server or ngrok tunnel)
         u = username if username is not None else os.environ.get(ENV_DECIDER_USERNAME)
         p = password if password is not None else os.environ.get(ENV_DECIDER_PASSWORD)
-
-        # Normalize whitespace
         u = u.strip() if isinstance(u, str) and u.strip() else None
         p = p.strip() if isinstance(p, str) and p.strip() else None
 
-        if u and p:
-            # Safely encode credentials to Base64; never logged or exposed
-            token = base64.b64encode(f"{u}:{p}".encode("utf-8")).decode("ascii")
-            self._auth_header: Optional[str] = f"Basic {token}"
+        # Resolve API key from argument or environment variables
+        # If explicit local/ngrok credentials are provided, preserve Basic Auth over ambient DECIDER_API_KEY
+        if api_key is not None:
+            key = api_key
+        elif u and p:
+            key = None
+        else:
+            key = os.environ.get(ENV_DECIDER_API_KEY) or os.environ.get("STRANDS_DECIDER_API_KEY")
+
+        self.api_key = key.strip() if isinstance(key, str) and key.strip() else None
+
+        # Resolve mode
+        env_mode = os.environ.get(ENV_DECIDER_MODE, "").strip().lower()
+
+        # Resolve URL
+        resolved_url = url or os.environ.get(ENV_DECIDER_URL) or os.environ.get(ENV_STRANDS_DECIDER_URL)
+        if not resolved_url:
+            if self.api_key or env_mode == "ugmdu":
+                resolved_url = UGMDU_DECIDER_URL
+            else:
+                resolved_url = DEFAULT_LOCAL_URL
+
+        self.url = resolved_url.rstrip("/")
+        self.timeout = timeout
+
+        if self.api_key:
+            self._auth_header: Optional[str] = f"Bearer {self.api_key}"
             self.is_authenticated: bool = True
+            self.auth_type: str = "bearer"
+        elif u and p:
+            token = base64.b64encode(f"{u}:{p}".encode("utf-8")).decode("ascii")
+            self._auth_header = f"Basic {token}"
+            self.is_authenticated = True
+            self.auth_type = "basic"
         elif u or p:
             missing = ENV_DECIDER_PASSWORD if u else ENV_DECIDER_USERNAME
             raise ConfigurationError(
@@ -171,9 +226,15 @@ class StrandsDeciderClient:
         else:
             self._auth_header = None
             self.is_authenticated = False
+            self.auth_type = "none"
+
+        # Hosted mode is active if Bearer API key is present or CloudFront endpoint is targeted (not Basic Auth)
+        self.is_hosted: bool = (self.auth_type == "bearer") or (
+            self.auth_type != "basic" and (env_mode == "ugmdu" or "da25tnxy06gjk.cloudfront.net" in self.url)
+        )
 
     def _build_headers(self, additional_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-        """Construct request headers including Basic Auth and ngrok tunnel compatibility headers."""
+        """Construct request headers including Bearer or Basic Auth and ngrok tunnel headers."""
         headers: Dict[str, str] = {
             "User-Agent": "CapacityX-StrandsDeciderClient/0.2.0",
             # ngrok-skip-browser-warning prevents HTML interstitial warning page on free ngrok domains
@@ -186,16 +247,26 @@ class StrandsDeciderClient:
         return headers
 
     def health(self) -> Dict[str, Any]:
-        """Query the loaded checkpoint, base model, and device from the running server."""
+        """Query server status: /v1/models for hosted API, /health for local server."""
         headers = self._build_headers()
-        req = urllib.request.Request(f"{self.url}/health", headers=headers)
+        path = "/v1/models" if self.is_hosted else "/health"
+        req = urllib.request.Request(f"{self.url}{path}", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=5.0) as res:
-                return json.loads(res.read().decode())
+                data = json.loads(res.read().decode())
+                if isinstance(data, dict):
+                    return data
+                elif isinstance(data, list):
+                    return {"models": data, "status": "ok"}
+                return {"raw": data}
         except Exception as exc:
+            hint = (
+                "Check DECIDER_API_KEY."
+                if self.is_hosted
+                else f"Start with: strands-decider serve {DEFAULT_MODEL_ID} --port 8099"
+            )
             raise ServerUnavailableError(
-                f"Strands Decider server unreachable at {self.url} ({exc}). "
-                f"Start with: strands-decider serve {DEFAULT_MODEL_ID} --port 8099"
+                f"Strands Decider server unreachable at {self.url}{path} ({exc}). {hint}"
             ) from exc
 
     def is_available(self) -> bool:
@@ -212,18 +283,36 @@ class StrandsDeciderClient:
         questions: Mapping[str, Dict[str, Any]],
         model_id: str = DEFAULT_MODEL_ID,
     ) -> Dict[str, Any]:
-        """Send state and typed questions to /v1/systemone."""
-        payload = json.dumps({
-            "state": state,
-            "model": model_id,
-            "questions": dict(questions),
-        }).encode("utf-8")
+        """Send state and typed questions.
 
+        In hosted mode (POST /v1/decide):
+        - Sends ONLY 'state' and 'questions'.
+        - Never sends 'model', 'max_tokens', 'temperature', or generation parameters.
+
+        In local mode (POST /v1/systemone):
+        - Sends 'state', 'model', and 'questions'.
+        """
+        if self.is_hosted:
+            endpoint_path = "/v1/decide"
+            payload_dict: Dict[str, Any] = {
+                "state": state,
+                "questions": dict(questions),
+            }
+        else:
+            endpoint_path = "/v1/systemone"
+            payload_dict = {
+                "state": state,
+                "model": model_id,
+                "questions": dict(questions),
+            }
+
+        payload = json.dumps(payload_dict).encode("utf-8")
         headers = self._build_headers({"Content-Type": "application/json"})
         req = urllib.request.Request(
-            f"{self.url}/v1/systemone",
+            f"{self.url}{endpoint_path}",
             data=payload,
             headers=headers,
+            method="POST",
         )
 
         try:
@@ -232,19 +321,20 @@ class StrandsDeciderClient:
                 return response_data.get("answers", {})
         except urllib.error.URLError as exc:
             raise ServerUnavailableError(
-                f"Strands Decider request failed at {self.url}/v1/systemone ({exc})"
+                f"Strands Decider request failed at {self.url}{endpoint_path} ({exc})"
             ) from exc
 
     def __repr__(self) -> str:
-        auth_state = "authenticated" if self.is_authenticated else "unauthenticated"
-        return f"<StrandsDeciderClient url='{self.url}' auth={auth_state}>"
+        mode = "hosted" if self.is_hosted else "local"
+        auth_state = f"authenticated ({self.auth_type})" if self.is_authenticated else "unauthenticated"
+        return f"<StrandsDeciderClient url='{self.url}' mode={mode} auth={auth_state}>"
 
 
 class StrandsDecider2B:
     """Decision Agent orchestrator implementing the Strands Decider 2B pattern.
 
-    Integrates the genuine Strands Decider 2B model via its official API,
-    selecting among the 5 typed tools:
+    Integrates the genuine Strands Decider 2B model via its official API
+    (hosted CloudFront or local inference), selecting among the 5 typed tools:
     - dispatch_replacement
     - reroute_shipment
     - crossdock
@@ -257,13 +347,13 @@ class StrandsDecider2B:
 
     def __init__(
         self,
-        server_url: str = DEFAULT_DECIDER_URL,
+        server_url: Optional[str] = None,
         confidence_threshold: float = CONFIDENCE_THRESHOLD,
         model_id: str = DEFAULT_MODEL_ID,
+        api_key: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
     ):
-        self.server_url = server_url
         self.confidence_threshold = confidence_threshold
         self.model_id = model_id
         self._config_error: Optional[str] = None
@@ -271,11 +361,14 @@ class StrandsDecider2B:
         try:
             self.client: Optional[StrandsDeciderClient] = StrandsDeciderClient(
                 url=server_url,
+                api_key=api_key,
                 username=username,
                 password=password,
             )
+            self.server_url = self.client.url
         except ConfigurationError as exc:
             self.client = None
+            self.server_url = server_url or DEFAULT_LOCAL_URL
             self._config_error = str(exc)
 
     def get_health_status(self) -> Dict[str, Any]:
@@ -290,23 +383,38 @@ class StrandsDecider2B:
             }
         try:
             info = self.client.health()
+            mode = "hosted" if self.client.is_hosted else "local"
+            models_data = info.get("data")
+            first_model_id = (
+                models_data[0].get("id")
+                if isinstance(models_data, list) and models_data and isinstance(models_data[0], dict)
+                else None
+            )
+            checkpoint = info.get("checkpoint") or first_model_id or (f"hosted ({mode})" if self.client.is_hosted else None)
             return {
                 "status": "online",
                 "is_real_model_available": True,
                 "server_url": self.server_url,
+                "mode": mode,
                 "is_authenticated": self.client.is_authenticated,
-                "checkpoint": info.get("checkpoint"),
+                "checkpoint": checkpoint,
                 "base_model": info.get("base_model"),
                 "device": info.get("device"),
                 "window": info.get("max_length"),
             }
         except Exception as exc:
+            instruction = (
+                "Ensure DECIDER_API_KEY is valid and has remaining quota."
+                if getattr(self.client, "is_hosted", False)
+                else f"Run 'strands-decider serve {self.model_id} --port 8099' on a GPU/WSL server to activate real inference."
+            )
             return {
                 "status": "offline",
                 "is_real_model_available": False,
                 "server_url": self.server_url,
+                "mode": "hosted" if getattr(self.client, "is_hosted", False) else "local",
                 "reason": str(exc),
-                "instruction": f"Run 'strands-decider serve {self.model_id} --port 8099' on a GPU/WSL server to activate real inference.",
+                "instruction": instruction,
             }
 
     def evaluate(self, incident: IncidentContext) -> DeciderOutcome:
@@ -319,7 +427,7 @@ class StrandsDecider2B:
 
         state_text = incident.to_state_text()
 
-        # Build official typed questions matching upstream specification
+        # Build official typed questions matching upstream specification (strictly <= 4 questions)
         questions = {
             "action": {
                 "type": "choice",
@@ -359,7 +467,7 @@ class StrandsDecider2B:
             answers = self.client.ask(state=state_text, questions=questions, model_id=self.model_id)
             return self._parse_real_model_response(incident, answers)
         except Exception as exc:
-            # Safe, transparent fallback when model is not available
+            # Safe, transparent fallback when model is not available or response invalid
             return self._safe_rule_fallback(
                 incident,
                 reason=(
@@ -372,17 +480,47 @@ class StrandsDecider2B:
         self, incident: IncidentContext, answers: Dict[str, Any]
     ) -> DeciderOutcome:
         """Parse genuine model response with calibrated probabilities."""
-        action_answer = answers.get("action", {})
-        selected_action = action_answer.get("choice", "escalate_to_human")
-        confidence = float(action_answer.get("confidence", 0.0))
-        probabilities = action_answer.get("probabilities", {})
+        if not answers or not isinstance(answers, dict):
+            raise ValueError("Model returned empty or non-dictionary answers payload.")
+
+        action_answer = answers.get("action")
+        if not action_answer or not isinstance(action_answer, dict):
+            raise ValueError("Model response missing or empty 'action' answer.")
+
+        selected_action = action_answer.get("choice") or action_answer.get("label")
+        if not selected_action or selected_action not in LOGISTICS_TOOLS:
+            raise ValueError(
+                f"Invalid action choice '{selected_action}' returned by model; not in permitted action schema: {list(LOGISTICS_TOOLS.keys())}"
+            )
+
+        probabilities = {
+            k: float(v) for k, v in action_answer.get("probabilities", {}).items()
+        }
+        if probabilities:
+            confidence = max(probabilities.values())
+        else:
+            confidence = float(action_answer.get("confidence", 0.0))
 
         is_urgent_score = float(answers.get("is_urgent", {}).get("noul", 0.5))
         human_review_score = float(answers.get("human_review", {}).get("noul", 0.5))
         urgency_tier = answers.get("urgency_tier", {}).get("choice", "HIGH" if is_urgent_score > 0.6 else "MODERATE")
 
         # Determine human review requirement based on model confidence and noul signal
-        human_review_required = (confidence < self.confidence_threshold) or (human_review_score >= 0.5)
+        confidence_below_threshold = confidence < self.confidence_threshold
+        model_flagged_review = human_review_score >= 0.5
+
+        review_reasons: List[str] = []
+        if confidence_below_threshold:
+            review_reasons.append(
+                f"Model confidence ({confidence:.1%}) is below safety threshold ({self.confidence_threshold:.0%})"
+            )
+        if model_flagged_review:
+            review_reasons.append(
+                f"Model human-review safety safeguard flagged (P(review) = {human_review_score:.2f} >= 0.50)"
+            )
+
+        human_review_required = confidence_below_threshold or model_flagged_review
+        human_review_reason = " | ".join(review_reasons) if review_reasons else None
 
         # Map selected action to delay estimates and dashboard-friendly descriptions
         delay_map = {
@@ -396,11 +534,25 @@ class StrandsDecider2B:
         deadline_met = estimated_delay <= 60
 
         headline = f"Strands Decider 2B selected '{selected_action}' with {confidence:.1%} calibrated confidence."
+
+        # Rationale bullets accurately distinguishing confidence threshold vs human review signal
+        confidence_bullet = (
+            f"Confidence threshold ({self.confidence_threshold:.0%}): SATISFIED ({confidence:.1%} >= {self.confidence_threshold:.0%}) - Statistical confidence criteria met."
+            if not confidence_below_threshold
+            else f"Confidence threshold ({self.confidence_threshold:.0%}): BELOW THRESHOLD ({confidence:.1%} < {self.confidence_threshold:.0%}) - Low model confidence requires review."
+        )
+
+        review_bullet = (
+            f"Human review safeguard: FLAGGED ({human_review_reason}) - Dispatcher confirmation required."
+            if human_review_required
+            else f"Human review safeguard: CLEAR (P(review) = {human_review_score:.2f} < 0.50) - Automated execution authorized."
+        )
+
         rationale = [
             f"Real Decider 2B evaluated incident state across 5 typed tools.",
             f"Top tool: '{selected_action}' (calibrated confidence: {confidence:.3f}).",
-            f"Confidence threshold ({self.confidence_threshold:.0%}): "
-            + ("SATISFIED - Automated execution allowed." if not human_review_required else "LOW/FLAGGED - Human dispatcher review required."),
+            confidence_bullet,
+            review_bullet,
             f"Urgency assessment: {urgency_tier} (P(urgent) = {is_urgent_score:.2f}).",
         ]
 
@@ -415,6 +567,7 @@ class StrandsDecider2B:
             sla_risk_level="LOW" if deadline_met and urgency_tier == "LOW" else "MODERATE" if deadline_met else "CRITICAL_BREACH",
             customer_action_required=not incident.customer_notified and incident.truck_breakdown,
             human_review_required=human_review_required,
+            human_review_reason=human_review_reason,
             engine="STRANDS_DECIDER_2B_REAL",
             is_real_model=True,
             model_confidence=confidence,
@@ -484,6 +637,7 @@ class StrandsDecider2B:
             sla_risk_level=sla_risk,
             customer_action_required=not incident.customer_notified and incident.truck_breakdown,
             human_review_required=True,  # All safe fallbacks mandate human review
+            human_review_reason="Safe fallback policy engaged; automated dispatch is withheld pending human confirmation.",
             engine="SAFE_FALLBACK",
             is_real_model=False,
             model_confidence=None,

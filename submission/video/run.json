@@ -1,0 +1,58 @@
+[
+ {
+  "start": 2.328342914581299,
+  "end": 10.542281866073608,
+  "out": {
+   "reply": "[CapacityX Operational Notice] Telemetry evaluated. Conversational generation offline (AccessDeniedException: An error occurred (AccessDeniedException) when calling the ConverseStream operation: Authentication failed: Please make ). All calibrated decision safeguards and tool previews are logged in the decision panel.",
+   "decisions": [],
+   "model_id": "us.amazon.nova-pro-v1:0",
+   "latency_ms": 1824,
+   "agent": "CapacityX: Autonomous Logistics Decision Agent",
+   "eager": false
+  },
+  "say": "INC-809: TRK-104 has engine failure on I-90. Standby unit STANDBY-22 is 18 minutes away. Refrigerated dairy cargo.",
+  "narrate": "Vehicle is immobilized with a nearby standby unit in range."
+ },
+ {
+  "start": 10.54228949546814,
+  "end": 17.18499231338501,
+  "out": {
+   "reply": "[CapacityX Operational Notice] Telemetry evaluated. Conversational generation offline (AccessDeniedException: An error occurred (AccessDeniedException) when calling the ConverseStream operation: Authentication failed: Please make ). All calibrated decision safeguards and tool previews are logged in the decision panel.",
+   "decisions": [],
+   "model_id": "us.amazon.nova-pro-v1:0",
+   "latency_ms": 455,
+   "agent": "CapacityX: Autonomous Logistics Decision Agent",
+   "eager": false
+  },
+  "say": "INC-810: TRK-205 is en route on I-80. Blizzard warning has closed the primary pass. Delay 75 minutes, SLA buffer 30 minutes.",
+  "narrate": "Vehicle is operational but faces a closed corridor exceeding SLA buffer."
+ },
+ {
+  "start": 17.18499779701233,
+  "end": 23.37188744544983,
+  "out": {
+   "reply": "[CapacityX Operational Notice] Telemetry evaluated. Conversational generation offline (AccessDeniedException: An error occurred (AccessDeniedException) when calling the ConverseStream operation: Authentication failed: Please make ). All calibrated decision safeguards and tool previews are logged in the decision panel.",
+   "decisions": [],
+   "model_id": "us.amazon.nova-pro-v1:0",
+   "latency_ms": 482,
+   "agent": "CapacityX: Autonomous Logistics Decision Agent",
+   "eager": false
+  },
+  "say": "INC-811: TRK-312 suffered axle fracture in an isolated rural zone. 0 standby backup units within 100 miles.",
+  "narrate": "Immobilized vehicle with zero backup units in range mandates immediate dispatcher escalation."
+ },
+ {
+  "start": 23.37189030647278,
+  "end": 29.919811487197876,
+  "out": {
+   "reply": "[CapacityX Operational Notice] Telemetry evaluated. Conversational generation offline (AccessDeniedException: An error occurred (AccessDeniedException) when calling the ConverseStream operation: Authentication failed: Please make ). All calibrated decision safeguards and tool previews are logged in the decision panel.",
+   "decisions": [],
+   "model_id": "us.amazon.nova-pro-v1:0",
+   "latency_ms": 504,
+   "agent": "CapacityX: Autonomous Logistics Decision Agent",
+   "eager": false
+  },
+  "say": "INC-812: TRK-410 cruising at 62 mph on US-101. Weather clear, cargo sensors nominal, 15 minutes ahead of schedule.",
+  "narrate": "All telemetry parameters are nominal, maintaining automated heartbeat monitoring."
+ }
+]

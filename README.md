@@ -1,6 +1,7 @@
 # CAPACITYX — Smart Logistics Decision Agent
 
-> **Hackathon Prototype** | Real-time incident triage and automated logistics decision-making with multi-agent orchestration: Strands Decider 2B (System 1) paired with Amazon Bedrock Nova Micro (System 2).
+> **Hackathon Prototype** | Real-time incident triage and automated logistics decision-making with multi-agent orchestration: Strands Decider 2B (System 1) paired with Amazon Bedrock Nova Micro (System 2).  
+> *Built with the AWS User Group Madurai Strands Decider hackathon kit*
 
 Welcome to **CapacityX**! This project provides an intelligent decision-making system for real-time logistics disruptions (e.g., vehicle breakdowns, strict delivery deadlines, temperature-sensitive cold chain freight, and replacement dispatching), keeping customers informed while safeguarding service level agreements (SLAs).
 
@@ -77,13 +78,15 @@ Strands Decider 2B strictly selects among the five predefined logistics actions:
 
 ```text
 CapacityX/
-├── .gitignore                   # Ignores venvs, node_modules, build artifacts & secrets
+├── .gitignore                   # Ignores venvs, node_modules, build artifacts & secrets (.env)
+├── .env.example                 # Committed configuration template (placeholders only)
+├── .env                         # Local private environment configuration (git-ignored)
 ├── README.md                    # Root project documentation (this file)
 │
 ├── frontend/                    # React + Vite Web Application
 │   ├── index.html               # Main HTML entry with typography & metadata
 │   ├── package.json             # NPM scripts and dependencies
-│   ├── vite.config.js           # Vite dev server configuration
+│   ├── vite.config.js           # Vite dev server configuration (loads root .env safely)
 │   └── src/
 │       ├── App.jsx              # Main Logistics Dashboard & Outcome Panel
 │       ├── index.css            # Custom Vanilla CSS design system & command center theme
@@ -104,37 +107,38 @@ CapacityX/
     ├── bedrock_nova_micro.py    # Amazon Bedrock Converse API adapter for amazon.nova-micro-v1:0
     ├── prompt_templates.py      # Few-shot prompts for compact models
     ├── decision_schema.json     # Standardized JSON Schema contract
-    └── tests/                   # Comprehensive offline unit test suite (38 tests)
-        ├── test_strands_decider.py      # 15 tests: Strands Decider 2B & auth tunnel
+    └── tests/                   # Comprehensive offline unit test suite (47 tests)
+        ├── test_strands_decider.py      # 24 tests: Strands Decider 2B, thresholds, auth, hosted CloudFront API
         ├── test_bedrock_nova_micro.py   # 14 tests: Bedrock adapter & error handling
         └── test_orchestrator.py         # 9 tests: Orchestrator, mock, safety flags, & fallbacks
 ```
 
 ---
 
-## 🧪 Comprehensive Offline Test Suite (38 Tests)
+## 🧪 Comprehensive Offline Test Suite (47 Tests)
 
 All tests are completely offline and make zero live cloud or external network calls.
 
-### Run All 38 Tests:
+### Run All 47 Tests:
 ```powershell
 .\backend\venv\Scripts\python.exe -m unittest discover -s patterns/tests -p "test_*.py" -v
 ```
 
 ### Expected Result:
 ```text
-Ran 38 tests in 8.50s
+Ran 47 tests in ~8.50s
 OK
 ```
 
 ### Test Suites Breakdown:
-1. **`test_strands_decider.py` (15 tests)**:
+1. **`test_strands_decider.py` (24 tests)**:
    - Tool definitions and question schema matching Strands Decider specification.
    - Exact 0.70 confidence threshold verification (calibrated boundary).
    - Independent `human_review` signal trigger (`noul >= 0.5`).
+   - Hosted CloudFront API (`https://da25tnxy06gjk.cloudfront.net`) integration and Bearer auth.
    - Authenticated ngrok HTTP Basic Auth tunnel headers (`ngrok-skip-browser-warning`).
    - Safe fallback when inference server is offline.
-   - Secret hygiene: `repr` and `str` never expose passwords or base64 tokens.
+   - Secret hygiene: `repr` and `str` never expose passwords, tokens, or API keys.
 2. **`test_bedrock_nova_micro.py` (14 tests)**:
    - Bedrock Converse API request formatting (`messages`, `system`, `inferenceConfig`).
    - Rejection of invalid/unrecognized action choices triggering safe fallback.
@@ -154,6 +158,14 @@ OK
 ---
 
 ## 🚀 How to Run the Project Locally
+
+### Step 0: Initialize Root Configuration
+CAPACITYX uses a single consolidated `.env` file at the project root for all local configuration:
+```powershell
+# In project root: D:\Antigravity_Projects\CapacityX
+Copy-Item .env.example .env
+```
+Open `.env` in your editor and optionally set your `DECIDER_API_KEY` for hosted Strands Decider mode.
 
 ### Terminal 1: Run the FastAPI Backend
 ```powershell
@@ -175,11 +187,17 @@ Open your browser at **`http://localhost:5173`**.
 
 ## ⚙️ Configuration & Environment Variables
 
+All settings are configured in the single root `.env` file. Vite and FastAPI load from this file automatically.
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `STRANDS_DECIDER_URL` | `http://127.0.0.1:8099` | URL of the Strands Decider 2B inference server (or ngrok tunnel) |
-| `STRANDS_DECIDER_USERNAME` | *(optional)* | HTTP Basic Auth username for authenticated tunnel |
-| `STRANDS_DECIDER_PASSWORD` | *(optional)* | HTTP Basic Auth password for authenticated tunnel |
+| `VITE_API_BASE_URL` | `http://127.0.0.1:8081` | Public API base URL used by the React/Vite dashboard to reach FastAPI |
+| `DECIDER_API_KEY` | *(optional)* | Private team API key for hosted Strands Decider API. Kept strictly on backend. |
+| `DECIDER_MODE` | `ugmdu` | Mode selector (e.g., `ugmdu` for hosted CloudFront API) |
+| `DECIDER_URL` | `https://da25tnxy06gjk.cloudfront.net` | Base URL for hosted Strands Decider API |
+| `STRANDS_DECIDER_URL` | `http://127.0.0.1:8099` | URL for local or ngrok Strands Decider server (used when `DECIDER_API_KEY` is unset) |
+| `STRANDS_DECIDER_USERNAME` | *(optional)* | HTTP Basic Auth username for local/ngrok server |
+| `STRANDS_DECIDER_PASSWORD` | *(optional)* | HTTP Basic Auth password for local/ngrok server |
 | `CAPACITYX_ENABLE_BEDROCK` | `false` | Enable or disable Bedrock operational reasoning |
 | `CAPACITYX_BEDROCK_MODE` | `disabled` | Bedrock operational mode: `disabled`, `mock`, or `live` |
 | `BEDROCK_MODEL_ID` | `amazon.nova-micro-v1:0` | Amazon Bedrock model ID |
